@@ -51,10 +51,7 @@ impl Message {
     }
 
     fn new(msg_type: MessageType, load: String) -> Message {
-        Message {
-            msg_type,
-            load,
-        }
+        Message { msg_type, load }
     }
 }
 
@@ -80,16 +77,17 @@ impl Client {
     // Method should return an error when a connection already exists.
     // The client should send a handshake to the server.
     fn open(&mut self, addr: &str, server: Server) -> CommsResult<()> {
-        if self.connections.contains_key(&String::from(addr)) {
-            Err(CommsError::ConnectionExists(String::from(addr)))
-        } else {
-            self.connections.insert(String::from(addr), Connection::Open(server));
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            self.connections.entry(String::from(addr))
+        {
+            e.insert(Connection::Open(server));
             let res = self.send(addr, Message::new(MessageType::Handshake, self.ip.clone()));
             match res {
-                _ => {
-                   Ok(())
-                }
+                Err(x) => Err(x),
+                _ => Ok(()),
             }
+        } else {
+            Err(CommsError::ConnectionExists(String::from(addr)))
         }
     }
 
@@ -110,20 +108,19 @@ impl Client {
                 let res = server.receive(msg);
                 match res {
                     Result::Err(CommsError::ServerLimitReached(strn)) => {
-                        *self.connections.get_mut(&String::from(addr)).unwrap() = Connection::Closed;
+                        *self.connections.get_mut(&String::from(addr)).unwrap() =
+                            Connection::Closed;
                         Result::Err(CommsError::ServerLimitReached(strn))
                     }
                     _ => {
-                        *self.connections.get_mut(&String::from(addr)).unwrap() = Connection::Open(server);
+                        *self.connections.get_mut(&String::from(addr)).unwrap() =
+                            Connection::Open(server);
                         res
                     }
                 }
             }
-            Connection::Closed => {
-                Err(CommsError::ConnectionClosed(String::from(addr)))
-            }
+            Connection::Closed => Err(CommsError::ConnectionClosed(String::from(addr))),
         }
-        
     }
 
     // Returns whether the connection to `addr` exists and has
@@ -141,7 +138,7 @@ impl Client {
     #[allow(dead_code)]
     fn count_closed(&self) -> usize {
         let mut result: usize = 0;
-        for (addr, _con) in &self.connections {
+        for addr in self.connections.keys() {
             if !self.is_open(addr) {
                 result += 1;
             }
@@ -156,7 +153,6 @@ enum Response {
     PostReceived,
     GetCount(u32),
 }
-
 
 #[derive(Clone)]
 struct Server {
@@ -185,41 +181,36 @@ impl Server {
         eprintln!("{} received:\n{}", self.name, msg.content());
 
         match msg.msg_type {
-            MessageType::Handshake => {
-                match self.connected_client {
-                    None => {
-                        self.connected_client = Some(msg.load);
-                        Ok(Response::HandshakeReceived)
-                    }
-                    Some(_) => {
+            MessageType::Handshake => match self.connected_client {
+                None => {
+                    self.connected_client = Some(msg.load);
+                    Ok(Response::HandshakeReceived)
+                }
+                Some(_) => {
+                    let output = self.name.clone();
+                    Err(CommsError::UnexpectedHandshake(output))
+                }
+            },
+            MessageType::Post => match self.connected_client {
+                None => {
+                    let output = self.name.clone();
+                    Err(CommsError::ConnectionNotFound(output))
+                }
+                Some(_) => {
+                    if self.post_count < self.limit {
+                        self.post_count += 1;
+                        Ok(Response::PostReceived)
+                    } else {
                         let output = self.name.clone();
-                        Err(CommsError::UnexpectedHandshake(output))
+                        Err(CommsError::ServerLimitReached(output))
                     }
                 }
-            }
-            MessageType::Post => {
-                match self.connected_client {
-                    None => {
-                        let output = self.name.clone();
-                        Err(CommsError::ConnectionNotFound(output))
-                    }
-                    Some(_) => {
-                        if self.post_count < self.limit {
-                            self.post_count += 1;
-                            Ok(Response::PostReceived)
-                        } else {
-                            let output = self.name.clone();
-                            Err(CommsError::ServerLimitReached(output))
-                        }
-                    }
-                }
-            }
+            },
             MessageType::GetCount => {
                 eprintln!("{} get count:\n", self.post_count);
                 Ok(Response::GetCount(self.post_count))
             }
         }
-        
     }
 }
 
@@ -320,7 +311,7 @@ mod tests {
             }
             _ => panic!(),
         }
-        
+
         // opening an already open connection should give an error
         let result = client.open("197.0.0.1", Server::new(String::from("TestServer2"), 100));
         let error_msg = result.unwrap_err();
